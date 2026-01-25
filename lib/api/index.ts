@@ -10,5 +10,7 @@ export { profileService } from "./services/profile.service";
 export { dashboardService } from "./services/dashboard.service";
 export { adminService } from "./services/admin.service";
 export { projectService } from "./services/project.service";
+export { timesheetService } from "./services/timesheet.service";
 export { healthService } from "./services/health.service";
+export * as taskService from "./services/task.service";
 

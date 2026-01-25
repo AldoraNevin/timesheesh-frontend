@@ -6,6 +6,7 @@ import type {
   CreateUserRequest,
   UpdateUserRequest,
   AuthResponse,
+  PaginatedUsersResponse,
 } from "../types";
 
 export const adminService = {
@@ -16,7 +17,8 @@ export const adminService = {
 
   // GET /api/admin/users
   async getAllUsers(): Promise<User[]> {
-    return apiClient.get<User[]>("/api/admin/users");
+    const response = await apiClient.get<PaginatedUsersResponse>("/api/admin/users");
+    return response.data || [];
   },
 
   // GET /api/admin/users/:id

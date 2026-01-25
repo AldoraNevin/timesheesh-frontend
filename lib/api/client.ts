@@ -2,7 +2,7 @@
 
 import type { ApiError } from "./types";
 
-const API_BASE_URL ="http://localhost:8080";
+const API_BASE_URL = "http://localhost:8000";
 
 class ApiClient {
   private baseURL: string;
@@ -101,14 +101,21 @@ class ApiClient {
   // GET request
   async get<T>(
     endpoint: string,
-    includeAuth: boolean = true
+    options: { params?: Record<string, string>; includeAuth?: boolean } = {}
   ): Promise<T> {
-    const url = `${this.baseURL}${endpoint}`;
+    const { params, includeAuth = true } = options;
+    let url = `${this.baseURL}${endpoint}`;
+
+    if (params && Object.keys(params).length > 0) {
+      const searchParams = new URLSearchParams(params);
+      url += `?${searchParams.toString()}`;
+    }
+
     const response = await fetch(url, {
       method: "GET",
       headers: this.getHeaders(includeAuth),
-      mode: "cors", // Explicitly set CORS mode
-      credentials: "omit", // Don't send credentials for CORS
+      mode: "cors",
+      credentials: "omit",
     });
 
     return this.handleResponse<T>(response);
@@ -153,12 +160,14 @@ class ApiClient {
   // DELETE request
   async delete<T>(
     endpoint: string,
+    data?: unknown,
     includeAuth: boolean = true
   ): Promise<T> {
     const url = `${this.baseURL}${endpoint}`;
     const response = await fetch(url, {
       method: "DELETE",
       headers: this.getHeaders(includeAuth),
+      body: data ? JSON.stringify(data) : undefined,
       mode: "cors", // Explicitly set CORS mode
       credentials: "omit", // Don't send credentials for CORS
     });

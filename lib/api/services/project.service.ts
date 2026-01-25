@@ -3,6 +3,7 @@
 import { apiClient } from "../client";
 import type {
   Project,
+  ProjectMember,
   CreateProjectRequest,
   UpdateProjectRequest,
   PaginatedProjectsResponse,
@@ -37,6 +38,11 @@ export const projectService = {
   // GET /api/getproject/:id
   async getProjectByID(id: number | string): Promise<Project> {
     return apiClient.get<Project>(`/api/getproject/${id}`);
+  },
+
+  // GET /api/project/:projectId/members
+  async getProjectMembers(projectId: number | string): Promise<ProjectMember[]> {
+    return apiClient.get<ProjectMember[]>(`/api/project/${projectId}/members`);
   },
 };
 

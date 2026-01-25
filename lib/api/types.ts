@@ -81,21 +81,21 @@ export interface Project {
   client_name: string; // Backend menggunakan client_name
   client_email?: string | null; // Nullable
   budget_type: BudgetType;
-  
+
   // Project Based Budget fields (nullable)
   budgeted_hours?: number | null;
   hour_threshold?: number | null;
   budget_cost?: number | null; // dalam rupiah
   budget_cost_threshold?: number | null; // dalam rupiah
   budget_revenue?: number | null; // dalam rupiah
-  
+
   // User Based Budget fields (nullable)
   cost_per_hour?: number | null; // dalam rupiah
   rate_per_hour?: number | null; // dalam rupiah
-  
+
   created_at: string;
   updated_at: string;
-  
+
   // Frontend-only fields untuk display (optional)
   tracked?: string;
   amount?: string;
@@ -105,19 +105,27 @@ export interface Project {
   color?: string;
 }
 
+export interface ProjectMember {
+  id: number;
+  project_id: number;
+  user_id: number;
+  role_in_project: string;
+  user: User;
+}
+
 export interface CreateProjectRequest {
   name: string;
   client_name: string;
   client_email?: string | null;
   budget_type: BudgetType;
-  
+
   // Project Based Budget fields
   budgeted_hours?: number | null;
   hour_threshold?: number | null;
   budget_cost?: number | null;
   budget_cost_threshold?: number | null;
   budget_revenue?: number | null;
-  
+
   // User Based Budget fields
   cost_per_hour?: number | null;
   rate_per_hour?: number | null;
@@ -128,14 +136,14 @@ export interface UpdateProjectRequest {
   client_name?: string;
   client_email?: string | null;
   budget_type?: BudgetType;
-  
+
   // Project Based Budget fields
   budgeted_hours?: number | null;
   hour_threshold?: number | null;
   budget_cost?: number | null;
   budget_cost_threshold?: number | null;
   budget_revenue?: number | null;
-  
+
   // User Based Budget fields
   cost_per_hour?: number | null;
   rate_per_hour?: number | null;
@@ -159,9 +167,95 @@ export interface PaginatedProjectsResponse {
   };
 }
 
+export interface PaginatedUsersResponse {
+  data: User[];
+  pagination: {
+    limit: number;
+    page: number;
+    total: number;
+  };
+}
+
 export interface ApiError {
   message: string;
   status: number;
   errors?: Record<string, string[]>;
 }
 
+// Task Types - sesuai dengan backend model
+export type TaskStatus = "todo" | "in_progress" | "done";
+
+export interface Task {
+  id: number;
+  project_id: number;
+  created_by_id: number;
+  assigned_to_id: number;
+  title: string;
+  description: string;
+  status: TaskStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateTaskRequest {
+  project_id: number;
+  assigned_to_id?: number;
+  role?: UserRole;
+  title: string;
+  description?: string;
+}
+
+export interface UpdateTaskStatusRequest {
+  status: TaskStatus;
+}
+
+// Timesheet Types - sesuai dengan backend model
+export type TimesheetStatus = "pending" | "approved" | "rejected";
+
+export interface Timesheet {
+  id: number;
+  user_id: number;
+  project_id: number;
+  task_id?: number | null;
+  description?: string; // Standardized for tracker/manual entries
+  duration_minutes: number;
+  duration_seconds: number;
+  clock_in: string;
+  clock_out?: string | null;
+  face_similarity_score: number;
+  status: TimesheetStatus;
+  rejection_note?: string;
+  approved_by_id?: number | null;
+  created_at: string;
+  updated_at: string;
+
+  // Relations
+  project?: Project;
+  task?: Task;
+  user?: User;
+}
+
+export interface ClockInRequest {
+  project_id: number;
+  task_id?: number | null;
+  face_similarity_score: number;
+  description?: string;
+}
+
+export interface ClockOutRequest {
+  description: string;
+}
+
+export interface ManualLogRequest {
+  project_id: number;
+  task_id?: number | null;
+  date: string; // YYYY-MM-DD
+  duration_seconds: number;
+  description?: string;
+}
+
+export interface DeleteWeekLogsRequest {
+  project_id: number;
+  task_id?: number | null;
+  week_start: string; // YYYY-MM-DD (Monday)
+}

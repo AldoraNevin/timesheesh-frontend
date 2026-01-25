@@ -1,11 +1,11 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import React, { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
-import { projectService } from "@/lib/api"
-import type { Project as ApiProject } from "@/lib/api/types"
+import { projectService, taskService, timesheetService, profileService, adminService } from "@/lib/api"
+import type { Project as ApiProject, ProjectMember, User, Timesheet } from "@/lib/api/types"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Plus, ChevronDown, Copy, Save, Download, Menu, Search, Star, ChevronUp, Edit, ChevronLeft, ChevronRight, X } from "lucide-react"
+import { Plus, ChevronDown, Copy, Save, Download, Menu, Search, Star, ChevronUp, Edit, ChevronLeft, ChevronRight, X, Check } from "lucide-react"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, DropdownMenuItem, DropdownMenuLabel, DropdownMenuCheckboxItem } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
@@ -13,10 +13,8 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
-import { Check } from "lucide-react";
 import { Calendar } from "@/components/ui/calendar";
 import { addDays, format, startOfWeek, endOfWeek, addWeeks, subWeeks } from "date-fns";
-import { DropdownMenuSeparator } from "@radix-ui/react-dropdown-menu"
 
 const COLORS = [
   { name: "green", class: "bg-green-500" },
@@ -62,8 +60,8 @@ function ColorPicker({ value, onChange }: { value: string, onChange: (v: string)
 }
 
 function formatWeekRange(date: Date) {
-  const start = startOfWeek(date);
-  const end = endOfWeek(date);
+  const start = startOfWeek(date, { weekStartsOn: 1 });
+  const end = endOfWeek(date, { weekStartsOn: 1 });
   return `${format(start, 'MMM dd')} - ${format(end, 'MMM dd, yyyy')}`;
 }
 
@@ -73,147 +71,301 @@ type RowType = {
   name?: string;
   projectName?: string;
   color?: string;
+  projectId?: number;
+  taskId?: number;
 };
 
 export default function TimesheetPage() {
   const [currentWeek, setCurrentWeek] = useState(new Date());
   const [isCreateProjectOpen, setIsCreateProjectOpen] = useState(false);
   const [isCreateTaskOpen, setIsCreateTaskOpen] = useState(false);
-  const [rows, setRows] = useState<RowType[]>([{ id: 1, type: 'project' }]);
+  const [rows, setRows] = useState<RowType[]>([]);
   const [selectedColor, setSelectedColor] = useState("green");
   const [isCalendarOpen, setIsCalendarOpen] = useState(false);
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [taskName, setTaskName] = useState("");
   const [selectedProjectForTask, setSelectedProjectForTask] = useState<string | null>(null);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [projects, setProjects] = useState<{ name: string; color: string }[]>([]);
+  const [projects, setProjects] = useState<{ id: number; name: string; client_name: string; color: string }[]>([]);
   const [isLoadingProjects, setIsLoadingProjects] = useState(false);
+  const [assignedTo, setAssignedTo] = useState<string>("");
+  const [assignmentMode, setAssignmentMode] = useState<'individual' | 'role'>('individual');
+  const [assignedRole, setAssignedRole] = useState<string>("");
+  const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
+  const [isLoadingMembers, setIsLoadingMembers] = useState(false);
+  const [userProfile, setUserProfile] = useState<User | null>(null);
+  const [projectTasks, setProjectTasks] = useState<{ [projectName: string]: any[] }>({});
+  const [rowTimes, setRowTimes] = useState<{ [rowId: number]: { [day: string]: string } }>({});
 
-  // Ajout d'un utilitaire pour convertir une chaîne en secondes
+  // Use a ref to rows for handleManualSave to avoid closure capture issues
+  const rowsRef = useRef<RowType[]>([]);
+  useEffect(() => {
+    rowsRef.current = rows;
+  }, [rows]);
+
+  const weekDays = [
+    { label: "Project", value: "project" },
+    { label: `Mo ${format(addDays(startOfWeek(currentWeek, { weekStartsOn: 1 }), 0), 'dd/MM')}`, value: "mon" },
+    { label: `Tu ${format(addDays(startOfWeek(currentWeek, { weekStartsOn: 1 }), 1), 'dd/MM')}`, value: "tue" },
+    { label: `We ${format(addDays(startOfWeek(currentWeek, { weekStartsOn: 1 }), 2), 'dd/MM')}`, value: "wed" },
+    { label: `Th ${format(addDays(startOfWeek(currentWeek, { weekStartsOn: 1 }), 3), 'dd/MM')}`, value: "thu" },
+    { label: `Fr ${format(addDays(startOfWeek(currentWeek, { weekStartsOn: 1 }), 4), 'dd/MM')}`, value: "fri" },
+    { label: `Sa ${format(addDays(startOfWeek(currentWeek, { weekStartsOn: 1 }), 5), 'dd/MM')}`, value: "sat" },
+    { label: `Su ${format(addDays(startOfWeek(currentWeek, { weekStartsOn: 1 }), 6), 'dd/MM')}`, value: "sun" },
+    { label: "Total", value: "total" },
+  ];
+
   function parseTimeInput(input: string): number {
-    // Formats acceptés : "1.5" (heures décimales), "2:30" (hh:mm), "1h20m10s"
-    if (/^\d+(\.\d+)?$/.test(input)) {
-      // Format décimal (heures)
-      return Math.round(parseFloat(input) * 3600);
-    }
-    const regex = /(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?/;
-    const match = input.match(regex);
-    if (match) {
-      const h = parseInt(match[1] || "0", 10);
-      const m = parseInt(match[2] || "0", 10);
-      const s = parseInt(match[3] || "0", 10);
+    const trimmed = input.trim().replace(',', '.');
+    if (!trimmed || trimmed === "0" || trimmed === "00:00:00") return 0;
+
+    // Match HH:mm:ss, HH:mm
+    const parts = trimmed.split(/[ :.]+/);
+    if (parts.length >= 2) {
+      const h = parseInt(parts[0], 10) || 0;
+      const m = parseInt(parts[1], 10) || 0;
+      const s = parseInt(parts[2], 10) || 0;
       return h * 3600 + m * 60 + s;
     }
-    if (/^\d+:\d{2}$/.test(input)) {
-      const [h, m] = input.split(":").map(Number);
-      return h * 3600 + m * 60;
+
+    // Match just numbers - treat as seconds
+    if (/^\d+$/.test(trimmed)) {
+      return parseInt(trimmed, 10);
     }
-    return 0;
+
+    // Match formats like 1h 30m 10s
+    const hMatch = trimmed.match(/(\d+)h/i);
+    const mMatch = trimmed.match(/(\d+)m/i);
+    const sMatch = trimmed.match(/(\d+)s/i);
+    let total = 0;
+    if (hMatch) total += parseInt(hMatch[1], 10) * 3600;
+    if (mMatch) total += parseInt(mMatch[1], 10) * 60;
+    if (sMatch) total += parseInt(sMatch[1], 10);
+
+    return total;
   }
 
-  function formatSeconds(sec: number): string {
-    const h = Math.floor(sec / 3600);
-    const m = Math.floor((sec % 3600) / 60);
-    const s = sec % 60;
+  function formatSeconds(totalSeconds: number): string {
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = totalSeconds % 60;
     return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
   }
 
-  // Ajout d'un nouvel état pour stocker les heures saisies par projet/tâche
-  const [rowTimes, setRowTimes] = useState<{ [rowId: number]: { [day: string]: string } }>({});
-
-  // Gestion de la saisie dans les inputs
   const handleTimeInputChange = (rowId: number, day: string, value: string) => {
     setRowTimes(prev => ({
       ...prev,
-      [rowId]: {
-        ...prev[rowId],
-        [day]: value
-      }
+      [rowId]: { ...prev[rowId], [day]: value }
     }));
+  };
+
+  const handleManualSave = async (rowId: number, day: string, value: string) => {
+    const secs = parseTimeInput(value);
+    const row = rowsRef.current.find(r => r.id === rowId);
+
+    if (row && row.projectId) {
+      const dayIndexMap: { [key: string]: number } = { mon: 0, tue: 1, wed: 2, thu: 3, fri: 4, sat: 5, sun: 6 };
+      const dayIdx = dayIndexMap[day];
+      const targetDate = format(addDays(startOfWeek(currentWeek, { weekStartsOn: 1 }), dayIdx), 'yyyy-MM-dd');
+
+      try {
+        const payload = {
+          project_id: row.projectId,
+          task_id: row.taskId || null,
+          date: targetDate,
+          duration_seconds: secs,
+          description: ""
+        };
+        console.log("[Timesheet] Persisting:", payload);
+        await timesheetService.createManualLog(payload);
+      } catch (err: any) {
+        console.error("[Timesheet] Persistence Error:", {
+          message: err.message,
+          status: err.status,
+          errors: err.errors,
+          row: row,
+          date: targetDate,
+          seconds: secs
+        });
+      }
+    } else {
+      console.warn("[Timesheet] Cannot persist: row or projectId missing", { rowId, row });
+    }
   };
 
   const handleTimeInputKeyDown = (rowId: number, day: string, e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       const value = rowTimes[rowId]?.[day] || "";
-      const seconds = parseTimeInput(value);
+      const secs = parseTimeInput(value);
       setRowTimes(prev => ({
         ...prev,
-        [rowId]: {
-          ...prev[rowId],
-          [day]: formatSeconds(seconds)
-        }
+        [rowId]: { ...prev[rowId], [day]: formatSeconds(secs) }
       }));
+      handleManualSave(rowId, day, value);
     }
   };
 
-  // Calcul du total pour chaque ligne
+  const handleTimeInputBlur = (rowId: number, day: string) => {
+    const value = rowTimes[rowId]?.[day] || "";
+    const secs = parseTimeInput(value);
+    setRowTimes(prev => ({
+      ...prev,
+      [rowId]: { ...prev[rowId], [day]: formatSeconds(secs) }
+    }));
+    handleManualSave(rowId, day, value);
+
+  };
+
   function getRowTotal(rowId: number): string {
     const times = rowTimes[rowId] || {};
-    let totalSec = 0;
+    let totalSecs = 0;
     weekDays.slice(1, -1).forEach(day => {
-      const val = times[day.value] || "";
-      totalSec += parseTimeInput(val);
+      totalSecs += parseTimeInput(times[day.value] || "");
     });
-    return formatSeconds(totalSec);
+    return formatSeconds(totalSecs);
   }
 
-  const weekDays = [
-    { label: "Project", value: "project" },
-    { label: `Mo ${format(addDays(startOfWeek(currentWeek), 0), 'dd/MM')}`, value: "mon", time: "00:00:00" },
-    { label: `Tu ${format(addDays(startOfWeek(currentWeek), 1), 'dd/MM')}`, value: "tue", time: "00:00:00" },
-    { label: `We ${format(addDays(startOfWeek(currentWeek), 2), 'dd/MM')}`, value: "wed", time: "00:00:00" },
-    { label: `Th ${format(addDays(startOfWeek(currentWeek), 3), 'dd/MM')}`, value: "thu", time: "00:00:00" },
-    { label: `Fr ${format(addDays(startOfWeek(currentWeek), 4), 'dd/MM')}`, value: "fri", time: "00:00:00" },
-    { label: `Sa ${format(addDays(startOfWeek(currentWeek), 5), 'dd/MM')}`, value: "sat", time: "00:00:00" },
-    { label: `Su ${format(addDays(startOfWeek(currentWeek), 6), 'dd/MM')}`, value: "sun", time: "00:00:00" },
-    { label: "Total", value: "total", time: "00:00:00" },
-  ];
-
-  // Color mapping function - maps project index to color
   const getProjectColor = (index: number): string => {
     const colorNames = ["green", "blue", "red", "purple", "yellow", "orange", "pink", "teal", "gray"];
     return colorNames[index % colorNames.length];
   };
 
-  // Fetch projects from API
   useEffect(() => {
-    const fetchProjects = async () => {
+    const fetchInitialData = async () => {
       try {
+        // Fetch profile
+        const profile = await profileService.getProfile();
+        setUserProfile(profile);
+
         setIsLoadingProjects(true);
         const fetchedProjects = await projectService.getAllProjects();
-        
-        // Map API projects to format needed for timesheet
         const mappedProjects = fetchedProjects.map((p: ApiProject, index: number) => ({
+          id: p.id,
           name: p.name || "Untitled Project",
+          client_name: p.client_name || "",
           color: getProjectColor(index),
         }));
-        
         setProjects(mappedProjects);
+
+        // Fetch logs
+        const logs = await timesheetService.getMyLogs();
+
+        // Map logs to rows and rowTimes
+        const newRowTimes: { [rowId: number]: { [day: string]: string } } = {};
+        const newRows: RowType[] = [];
+        let nextRowId = 1;
+
+        console.log(`[Timesheet] Fetched ${logs.length} total logs.`);
+
+        const groupedLogs: { [key: string]: { projectId: number, taskId?: number | null, logs: Timesheet[] } } = {};
+        logs.forEach((log: Timesheet) => {
+          const key = log.task_id ? `p${log.project_id}t${log.task_id}` : `p${log.project_id}`;
+          if (!groupedLogs[key]) {
+            groupedLogs[key] = { projectId: log.project_id, taskId: log.task_id, logs: [] };
+          }
+          groupedLogs[key].logs.push(log);
+        });
+
+        Object.values(groupedLogs).forEach(group => {
+          const rowTimesForThisGroup: { [day: string]: string } = {};
+          let groupHasTimeThisWeek = false;
+
+          group.logs.forEach(log => {
+            const logDateS = log.clock_in.split('T')[0];
+            const weekStartObj = startOfWeek(currentWeek, { weekStartsOn: 1 });
+            const daysShort = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+
+            for (let i = 0; i < 7; i++) {
+              const targetDayS = format(addDays(weekStartObj, i), 'yyyy-MM-dd');
+              if (logDateS === targetDayS) {
+                const dayShort = daysShort[i];
+                const currentSeconds = parseTimeInput(rowTimesForThisGroup[dayShort] || "0");
+                const logSeconds = log.duration_seconds || (log.duration_minutes * 60) || 0;
+                if (logSeconds > 0) {
+                  groupHasTimeThisWeek = true;
+                  rowTimesForThisGroup[dayShort] = formatSeconds(currentSeconds + logSeconds);
+                }
+                break;
+              }
+            }
+          });
+
+          if (groupHasTimeThisWeek) {
+            const rowId = nextRowId++;
+            const projectMapped = mappedProjects.find(p => p.id === group.projectId);
+
+            let displayName = "Untitled Project";
+            if (group.taskId) {
+              const logWithTask = group.logs.find(l => l.task);
+              displayName = `${projectMapped?.name || "Untitled"} - ${logWithTask?.task?.title || "Unnamed Task"}`;
+            } else if (projectMapped) {
+              displayName = `${projectMapped.name} - ${projectMapped.client_name}`;
+            }
+
+            newRows.push({
+              id: rowId,
+              type: group.taskId ? 'task' : 'project',
+              name: displayName,
+              projectName: projectMapped?.name,
+              color: projectMapped?.color || 'gray',
+              projectId: group.projectId,
+              taskId: group.taskId || undefined
+            });
+            newRowTimes[rowId] = rowTimesForThisGroup;
+          }
+        });
+
+        newRows.push({ id: nextRowId++, type: 'project' });
+        setRows(newRows);
+        setRowTimes(newRowTimes);
+        console.log(`[Timesheet] Grid ready: ${newRows.length} rows.`);
+
+        const tasksMap: { [projectName: string]: any[] } = {};
+        for (const project of fetchedProjects) {
+          try {
+            const tasks = await taskService.getProjectTasks(project.id);
+            tasksMap[project.name] = tasks;
+          } catch (err) {
+            tasksMap[project.name] = [];
+          }
+        }
+        setProjectTasks(tasksMap);
       } catch (err) {
-        console.error("Failed to fetch projects:", err);
         setProjects([]);
       } finally {
         setIsLoadingProjects(false);
       }
     };
+    fetchInitialData();
+  }, [currentWeek]);
 
-    fetchProjects();
-  }, []);
-
-  const handlePreviousWeek = () => {
-    setCurrentWeek(subWeeks(currentWeek, 1));
-  };
-
-  const handleNextWeek = () => {
-    setCurrentWeek(addWeeks(currentWeek, 1));
-  };
-
+  const handlePreviousWeek = () => setCurrentWeek(subWeeks(currentWeek, 1));
+  const handleNextWeek = () => setCurrentWeek(addWeeks(currentWeek, 1));
   const handleAddRow = () => {
-    setRows([...rows, { id: rows.length + 1, type: 'project' }]);
+    const newId = Math.max(...rows.map(r => r.id), 0) + 1;
+    setRows([...rows, { id: newId, type: 'project' }]);
   };
-
-  const handleRemoveRow = (id: number) => {
-    setRows(rows.filter(row => row.id !== id));
+  const handleRemoveRow = async (id: number) => {
+    const row = rows.find(r => r.id === id);
+    if (row?.projectId) {
+      try {
+        const weekStart = format(startOfWeek(currentWeek, { weekStartsOn: 1 }), 'yyyy-MM-dd');
+        console.log("[Timesheet] Deleting row logs for week beginning:", weekStart);
+        await timesheetService.deleteWeekLogs({
+          project_id: row.projectId,
+          task_id: row.taskId || null,
+          week_start: weekStart
+        });
+      } catch (err) {
+        console.error("[Timesheet] Failed to permanently delete row:", err);
+      }
+    }
+    setRows(prev => prev.filter(row => row.id !== id));
+    setRowTimes(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
   };
 
   const handleWeekSelect = (date: Date | undefined) => {
@@ -223,524 +375,365 @@ export default function TimesheetPage() {
     }
   };
 
-  const handleProjectSelect = (projectName: string, color: string) => {
-    setSelectedProject(projectName);
-    // Update the current row with project info
-    const updatedRows = rows.map<RowType>(row => 
-      row.id === rows.length ? { ...row, name: projectName, color, type: "project" as "project" } : row
-    );
-    setRows(updatedRows);
-    // Add a new empty row
-    setRows([...updatedRows, { id: rows.length + 1, type: "project" }]);
-  };
-
-  // Ajout d'un projet à la liste
-  const handleSelectProject = (project: { name: string; color: string }) => {
-    setRows([...rows, { id: rows.length + 1, type: 'project', name: project.name, color: project.color }]);
+  const handleSelectProject = (project: { id: number; name: string; client_name: string; color: string }, currentRowId: number) => {
+    setRows(prev => prev.map(row => {
+      if (row.id === currentRowId) {
+        return {
+          ...row,
+          name: `${project.name} - ${project.client_name}`,
+          color: project.color,
+          projectId: project.id,
+          type: 'project'
+        };
+      }
+      return row;
+    }));
     setIsDropdownOpen(false);
   };
 
-  const handleCreateTask = (projectName: string) => {
+  const handleCreateTaskOpen = async (projectName: string) => {
     setSelectedProjectForTask(projectName);
     setIsCreateTaskOpen(true);
     setIsDropdownOpen(false);
-  };
 
-  const handleTaskSubmit = () => {
-    if (taskName && selectedProjectForTask) {
-      const newTaskRow: RowType = {
-        id: rows.length + 1,
-        type: 'task',
-        name: taskName,
-        projectName: selectedProjectForTask,
-        color: projects.find(p => p.name === selectedProjectForTask)?.color
-      };
-      setRows([...rows, newTaskRow]);
-      setTaskName("");
-      setIsCreateTaskOpen(false);
+    try {
+      setIsLoadingMembers(true);
+      const project = projects.find(p => p.name === projectName);
+      let allPotentialUsers: User[] = [];
+
+      // 1. Always include the current user
+      if (userProfile) {
+        allPotentialUsers.push(userProfile);
+      }
+
+      // 2. Fetch project members if project found
+      if (project) {
+        const members = await projectService.getProjectMembers(project.id);
+        members.forEach(m => {
+          if (!allPotentialUsers.find(u => u.id === m.user.id)) {
+            allPotentialUsers.push(m.user);
+          }
+        });
+      }
+
+      // 3. Fallback: If user is admin/PM, maybe they can assign to ANYONE
+      if (userProfile?.role === 'admin') {
+        const allUsers = await adminService.getAllUsers();
+        if (Array.isArray(allUsers)) {
+          allUsers.forEach(u => {
+            if (!allPotentialUsers.find(pUser => pUser.id === u.id)) {
+              allPotentialUsers.push(u);
+            }
+          });
+        }
+      }
+
+      // Convert combined users back to a format that fits projectMembers state (wrapped in ProjectMember-like structure or just change state type)
+      // Actually let's just use User[] for the selection state to make it simpler
+      const mappedAsMembers: ProjectMember[] = allPotentialUsers.map(u => ({
+        id: 0, // dummy
+        project_id: project?.id || 0,
+        user_id: u.id,
+        role_in_project: u.role,
+        user: u
+      }));
+
+      setProjectMembers(mappedAsMembers);
+    } catch (err) {
+      console.error("Failed to fetch potential members:", err);
+      // Fallback to current user if nothing else works
+      if (userProfile) {
+        setProjectMembers([{
+          id: 0,
+          project_id: 0,
+          user_id: userProfile.id,
+          role_in_project: userProfile.role,
+          user: userProfile
+        }]);
+      }
+    } finally {
+      setIsLoadingMembers(false);
     }
   };
 
-  // Ligne d'exemple représentant une tâche d'un projet
-  const exampleTaskRow: RowType = {
-    id: 999,
-    type: 'task',
-    name: 'Tâche exemple',
-    projectName: 'Projet Démo',
-    color: 'purple'
+  const handleTaskSubmit = async () => {
+    if (taskName && selectedProjectForTask) {
+      try {
+        const project = projects.find(p => p.name === selectedProjectForTask);
+        if (!project) return;
+
+        const payload: any = {
+          project_id: project.id,
+          title: taskName,
+          description: ""
+        };
+
+        if (assignmentMode === 'individual') {
+          payload.assigned_to_id = parseInt(assignedTo);
+        } else {
+          payload.role = assignedRole;
+        }
+
+        const createdTask = await taskService.createTask(payload);
+
+        const newId = Math.max(...rows.map(r => r.id), 0) + 1;
+        const newTaskRow: RowType = {
+          id: newId,
+          type: 'task',
+          name: taskName,
+          projectName: selectedProjectForTask || undefined,
+          color: project?.color || 'gray',
+          projectId: project?.id,
+          taskId: createdTask.id
+        };
+
+        // Add current row logic if open via selection, but handleTaskSubmit currently adds new row.
+        // Let's keep it consistent: adds new row but clears modal
+        setRows([...rows, newTaskRow]);
+        setTaskName("");
+        setIsCreateTaskOpen(false);
+
+        // Refresh tasks
+        const tasks = await taskService.getProjectTasks(project.id);
+        setProjectTasks(prev => ({ ...prev, [project.name]: tasks }));
+      } catch (error) {
+        alert("Failed to create task.");
+      }
+    }
   };
 
   return (
     <div className="min-h-screen bg-gray-50 mt-16">
-      {/* Header */}
       <header className="bg-[#e4eaee] px-4 py-3 text-[#999]">
-        <div className="flex items-center justify-between max-w-7xl mx-auto">
+        <div className="flex items-center justify-between max-w-[1600px] mx-auto">
           <h1 className="text-2xl font-semibold text-[#999]">Timesheet</h1>
-
           <div className="flex items-center gap-3">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline">Teammates
-                  <ChevronDown/>
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent className="w-56">
-                <DropdownMenuSeparator />
-                <DropdownMenuCheckboxItem
-
-                >
-                  <div className="grid w-full max-w-sm items-center gap">
-                    <Label htmlFor="search"><Search/></Label>
-                    <Input/>
-                  </div>
-                </DropdownMenuCheckboxItem>
-                <DropdownMenuCheckboxItem
-                  disabled
-                >
-                  Activity Bar
-                </DropdownMenuCheckboxItem>
-                <DropdownMenuCheckboxItem
-                >
-                  Panel
-                </DropdownMenuCheckboxItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-
             <div className="flex items-center">
-              <Button 
-                variant="ghost" 
-                size="sm" 
-                onClick={handlePreviousWeek}
-                className="text-gray-500 hover:text-gray-700"
-              >
-                <ChevronLeft className="w-4 h-4" />
-              </Button>
-              
+              <Button variant="ghost" size="sm" onClick={handlePreviousWeek} className="text-gray-500"><ChevronLeft className="w-4 h-4" /></Button>
               <Popover open={isCalendarOpen} onOpenChange={setIsCalendarOpen}>
                 <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-48 justify-center text-left font-normal"
-                  >
-                    {formatWeekRange(currentWeek)}
-                  </Button>
+                  <Button variant="outline" size="sm" className="w-48 justify-center text-left font-normal">{formatWeekRange(currentWeek)}</Button>
                 </PopoverTrigger>
                 <PopoverContent className="w-auto p-0" align="end">
-                  <Calendar
-                    mode="single"
-                    selected={currentWeek}
-                    onSelect={handleWeekSelect}
-                    initialFocus
-                    showOutsideDays={false}
-                    className="border-0"
-                  />
+                  <Calendar mode="single" selected={currentWeek} onSelect={handleWeekSelect} initialFocus showOutsideDays={false} className="border-0" />
                 </PopoverContent>
               </Popover>
-
-              <Button 
-                variant="ghost" 
-                size="sm" 
-                onClick={handleNextWeek}
-                className="text-gray-500 hover:text-gray-700"
-              >
-                <ChevronRight className="w-4 h-4" />
-              </Button>
+              <Button variant="ghost" size="sm" onClick={handleNextWeek} className="text-gray-500"><ChevronRight className="w-4 h-4" /></Button>
             </div>
-
-            <Button variant="ghost" size="sm" className="sm:hidden">
-              <Menu className="w-4 h-4" />
-            </Button>
           </div>
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto p-4">
-        {/* Week Navigation */}
-        <div className="bg-[#e4eaee] rounded-lg mb-4 overflow-x-auto lg:overflow-x-visible xl:overflow-x-visible">
-          <div className="grid grid-cols-10 w-[900px] sm:w-[1100px] md:w-[1300px] lg:w-full min-w-[900px] sm:min-w-[1100px] md:min-w-[1300px] lg:min-w-0">
-            <div className="col-span-1 flex items-center justify-center px-3 py-3 w-full min-w-[120px] sm:min-w-[140px] md:min-w-[160px] lg:min-w-0 max-w-xs text-[#999] font-medium text-center text-sm sm:text-base md:text-lg lg:text-lg">
-              Projects
-            </div>
-            {weekDays.slice(1).map((day, index) => (
-              <div
-                key={day.value}
-                className={`col-span-1 flex items-center justify-center px-3 py-3 w-full min-w-0 max-w-xs text-base lg:text-lg ${index === weekDays.length - 2
-                    ? "bg-blue-200 font-semibold"
-                    : "text-gray-700"
-                }`}
-              >
-                <div className="truncate break-words w-full">{day.label}</div>
+      <main className="max-w-[1800px] mx-auto p-4">
+        {/* Header Grid */}
+        <div className="bg-[#e4eaee] rounded-lg mb-4 overflow-x-auto">
+          <div className="grid grid-cols-12 w-full min-w-[1200px]">
+            <div className="col-span-3 flex items-center px-4 py-3 text-[#999] font-medium border-r border-gray-200">Projects</div>
+            {weekDays.slice(1).map((day, idx) => (
+              <div key={day.value} className={`${day.value === 'total' ? 'col-span-2' : 'col-span-1'} flex items-center justify-center px-3 py-3 text-base ${idx === weekDays.length - 2 ? "bg-blue-200 font-semibold" : "text-gray-700"}`}>
+                {day.label}
               </div>
             ))}
           </div>
         </div>
 
-        {/* Project Selection Row - Responsive */}
-        <div className="bg-white rounded-lg border border-gray-200 mb-4 block lg:hidden">
-          <div className="flex flex-col gap-2 p-4">
-            <div className="mb-2">
-              {/* Projets et tâches sélectionnés */}
-              {rows.filter(row => row.name || row.type === 'task').map((row) => (
-                <div key={row.id} className="relative mb-2">
-                  <div className="flex items-center w-full min-w-0 border border-gray-200 rounded-lg px-4 py-3 bg-gray-50">
-                    <div className={`w-5 h-5 rounded-full mr-2 ${row.color ? `bg-${row.color}-500` : 'bg-gray-200'}`}></div>
-                    <span className="text-gray-700 font-medium break-words w-full">
-                      {row.type === 'task' ? `${row.projectName}: ${row.name}` : row.name}
-                    </span>
-                  </div>
-                  <button 
-                    onClick={() => handleRemoveRow(rows[rows.length - 1].id)}
-                    className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 flex justify-center items-center p-1 rounded hover:bg-gray-100"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              ))}
-              {/* Bouton pour sélectionner un projet/tâche toujours en bas */}
-              <div className="relative mb-2">
-                <DropdownMenu open={isDropdownOpen} onOpenChange={setIsDropdownOpen}>
-                  <DropdownMenuTrigger asChild>
-                    <div className="flex items-center w-full min-w-0 cursor-pointer border border-gray-200 rounded-lg px-4 py-3 bg-gray-50">
-                      <span className="w-5 h-5 flex items-center justify-center rounded-full border-2 border-blue-500 bg-white mr-2">
-                        <Plus className="w-4 h-4 text-blue-500" />
-                      </span>
-                      <span className="text-blue-600 font-medium hover:underline break-words w-full">Select Project</span>
-                    </div>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent className="w-80 p-0" align="start" sideOffset={5}>
-                    <div className="p-4 border-b">
-                      <div className="relative">
-                        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
-                        <Input placeholder="Search Project or Client" className="pl-10 bg-gray-50 border-gray-200" />
-                      </div>
-                    </div>
-                    <div className="p-4">
-                      <div className="space-y-3 mt-3">
-                        {projects.map((project) => (
-                          <div key={project.name} className="flex items-center justify-between p-2 hover:bg-gray-50 rounded">
-                            <div className="flex items-center gap-3">
-                              <div className={`w-3 h-3 rounded-full bg-${project.color}-500`}></div>
-                              <span className="text-gray-700">{project.name}</span>
-                            </div>
-                            <Button 
-                              variant="ghost" 
-                              size="sm" 
-                              className="text-blue-500 hover:text-blue-600 hover:underline"
-                              onClick={() => handleCreateTask(project.name)}
-                            >
-                              <span className="mr-1">Create Task</span>
-                              <Star className="w-4 h-4 hover:bg-amber-300 cursor-pointer duration-100" />
-                            </Button>
-                            <Button 
-                              variant="ghost" 
-                              size="sm" 
-                              className="text-green-500 hover:text-green-600 hover:underline"
-                              onClick={() => handleSelectProject(project)}
-                            >
-                              <span className="mr-1">Ajouter</span>
-                            </Button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-                <button 
-                  onClick={() => handleRemoveRow(rows[rows.length - 1].id)}
-                  className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 flex justify-center items-center p-1 rounded hover:bg-gray-100"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-            <Accordion type="single" collapsible defaultValue="" className="flex-1">
-              <AccordionItem value="days" className="border-0">
-                <AccordionTrigger className="px-0 py-2 text-gray-700 font-medium text-base bg-gray-100 rounded-lg">
-                  Afficher les jours et heures
-                </AccordionTrigger>
-                <AccordionContent className="px-0 pt-2 pb-0">
-                  <div className="flex flex-col gap-2">
-                    {weekDays.slice(1).map((day, index) => (
-                      <div key={day.value} className="flex flex-col gap-1">
-                        <label className="text-gray-700 text-sm font-medium">{day.label}</label>
-                        <input
-                          type="text"
-                          value={day.time}
-                          readOnly
-                          className="w-full text-center bg-transparent text-gray-600 text-base cursor-not-allowed border border-gray-200 rounded-lg py-2"
-                          title="Select project/task first"
-                        />
-                      </div>
-                    ))}
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-            </Accordion>
-          </div>
-        </div>
-
-        {/* Version desktop : grid horizontal */}
-        <div className="bg-white rounded-lg border border-gray-200 mb-4 overflow-x-auto hidden lg:block">
+        {/* Dynamic Rows */}
+        <div className="bg-white rounded-lg border border-gray-200 mb-4 overflow-x-auto">
           {rows.map((row) => (
-            <div className="grid grid-cols-10 w-full min-w-0 relative" key={row.id}>
-              <div className="col-span-1 flex items-center px-3 py-3 w-full min-w-0 max-w-xs border-r border-gray-200 cursor-pointer hover:bg-gray-50">
-                {row.type === 'project' && !row.name ? (
+            <div className="grid grid-cols-12 w-full min-w-[1200px] border-b last:border-0 relative" key={row.id}>
+              <div className="col-span-3 flex items-center px-4 py-3 border-r border-gray-200">
+                {!row.name && row.type === 'project' ? (
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <div className="flex items-center w-full min-w-0">
+                      <div className="flex items-center w-full cursor-pointer">
                         <span className="w-5 h-5 flex items-center justify-center rounded-full border-2 border-blue-500 bg-white mr-2">
                           <Plus className="w-4 h-4 text-blue-500" />
                         </span>
-                        <span className="text-blue-600 font-medium hover:underline break-words w-full">Select Project</span>
+                        <span className="text-blue-600 font-medium hover:underline">Select Project</span>
                       </div>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent className="w-80 p-0" align="start" sideOffset={5}>
+                    <DropdownMenuContent className="w-80 p-0" align="start">
                       <div className="p-4 border-b">
                         <div className="relative">
-                          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
-                          <Input placeholder="Search Project or Client" className="pl-10 bg-gray-50 border-gray-200" />
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
+                          <Input placeholder="Search Project or Client" className="pl-10 bg-gray-50" />
                         </div>
                       </div>
-
                       <div className="p-4">
-                        <div className="flex items-center justify-between mb-4">
-                          <Accordion type="single" collapsible defaultValue="projects" className="flex-1">
-                            <AccordionItem value="projects" className="border-0">
-                              <div className="flex items-center justify-between">
-                                <AccordionTrigger className="p-0 hover:underline text-sm text-gray-600 font-medium flex items-center gap-2 flex-shrink-0">
-                                  <span>{projects.length} Project{projects.length !== 1 ? 's' : ''}</span>
-                                </AccordionTrigger>
-                                <button type="button" className="ml-2 p-1 rounded hover:bg-gray-100">
-                                  <Edit className="w-4 h-4 text-gray-400" />
-                                </button>
-                              </div>
-                              <AccordionContent className="p-0">
-                                <div className="space-y-3 mt-3">
-                                  {projects.map((project) => (
-                                    <div key={project.name} className="flex items-center justify-between p-2 hover:bg-gray-50 rounded">
-                                      <div className="flex items-center gap-3">
-                                        <div className={`w-3 h-3 rounded-full bg-${project.color}-500`}></div>
-                                        <span className="text-gray-700">{project.name}</span>
+                        <Accordion type="single" collapsible defaultValue="projects">
+                          <AccordionItem value="projects" className="border-0">
+                            <AccordionTrigger className="p-0 text-sm font-medium text-gray-600">
+                              {projects.length} Projects
+                            </AccordionTrigger>
+                            <AccordionContent className="p-0 mt-2">
+                              <div className="space-y-1">
+                                {projects.map((project) => (
+                                  <Accordion type="single" collapsible key={project.name} className="w-full">
+                                    <AccordionItem value={`tasks-${project.name}`} className="border-0">
+                                      <div className="flex items-center justify-between p-2 hover:bg-gray-50 rounded group">
+                                        <div className="flex items-center gap-3">
+                                          <div className={`w-3 h-3 rounded-full bg-${project.color}-500`}></div>
+                                          <span className="text-gray-700 font-medium cursor-pointer" onClick={() => handleSelectProject(project, row.id)}>{project.name}</span>
+                                        </div>
+                                        <AccordionTrigger className="p-0 hover:no-underline">
+                                          <span className="text-xs text-gray-500 mr-2">{(projectTasks[project.name] || []).length} tasks</span>
+                                        </AccordionTrigger>
                                       </div>
-                                      <Button 
-                                        variant="ghost" 
-                                        size="sm" 
-                                        className="text-blue-500 hover:text-blue-600 hover:underline"
-                                        onClick={() => handleCreateTask(project.name)}
-                                      >
-                                        <span className="mr-1">Create Task</span>
-                                        <Star className="w-4 h-4" />
-                                      </Button>
-                                    </div>
-                                  ))}
-                                </div>
-                              </AccordionContent>
-                            </AccordionItem>
-                          </Accordion>
-                        </div>
-
-                        <div className="mt-6 pt-4 border-t">
-                          <Dialog open={isCreateProjectOpen} onOpenChange={setIsCreateProjectOpen}>
-                            <DialogTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                className="w-full justify-start text-blue-500 hover:text-blue-600 hover:bg-blue-50"
-                              >
-                                <Plus className="w-4 h-4 mr-2" />
-                                Create new Project
-                              </Button>
-                            </DialogTrigger>
-                            <DialogContent className="sm:max-w-md">
-                              <DialogHeader>
-                                <DialogTitle className="text-gray-600 font-normal">Create new Project</DialogTitle>
-                              </DialogHeader>
-
-                              <div className="space-y-4 py-4">
-                                <div className="grid grid-cols-2 gap-4">
-                                  <div>
-                                    <Input placeholder="Enter Project name" className="bg-gray-50 border-gray-200" />
-                                  </div>
-                                  <div>
-                                    <Select>
-                                      <SelectTrigger className="bg-gray-50 border-gray-200">
-                                        <SelectValue placeholder="Select client" />
-                                      </SelectTrigger>
-                                      <SelectContent>
-                                        <SelectItem value="client1">Client 1</SelectItem>
-                                        <SelectItem value="client2">Client 2</SelectItem>
-                                      </SelectContent>
-                                    </Select>
-                                  </div>
-                                </div>
-
-                                <div className="grid grid-cols-2 gap-4">
-                                  <div className="flex items-center gap-3">
-                                    <ColorPicker value={selectedColor} onChange={setSelectedColor} />
-                                    <div className="flex items-center space-x-2">
-                                      <Checkbox
-                                        id="public"
-                                        defaultChecked
-                                        className="data-[state=checked]:bg-blue-500 data-[state=checked]:border-blue-500"
-                                      />
-                                      <Label htmlFor="public" className="text-blue-500 font-medium">
-                                        Public
-                                      </Label>
-                                    </div>
-                                  </div>
-
-                                  <div>
-                                    <Select>
-                                      <SelectTrigger className="bg-gray-50 border-gray-200">
-                                        <SelectValue placeholder="No template" />
-                                      </SelectTrigger>
-                                      <SelectContent>
-                                        <SelectItem value="template1">Template 1</SelectItem>
-                                        <SelectItem value="template2">Template 2</SelectItem>
-                                      </SelectContent>
-                                    </Select>
-                                  </div>
-                                </div>
+                                      <AccordionContent className="p-0 ml-6">
+                                        <div className="space-y-1 mt-1">
+                                          {(projectTasks[project.name] || []).map((task) => (
+                                            <div key={task.id} className="p-2 hover:bg-gray-100 rounded cursor-pointer text-sm text-gray-600" onClick={() => {
+                                              setRows(prev => prev.map(r => {
+                                                if (r.id === row.id) {
+                                                  return {
+                                                    ...r,
+                                                    type: 'task',
+                                                    name: `${project.name} - ${task.title}`,
+                                                    projectName: project.name,
+                                                    color: project.color,
+                                                    projectId: project.id,
+                                                    taskId: task.id
+                                                  };
+                                                }
+                                                return r;
+                                              }));
+                                              setIsDropdownOpen(false);
+                                            }}>
+                                              {task.title}
+                                            </div>
+                                          ))}
+                                          <Button variant="ghost" size="sm" className="w-full justify-start text-blue-500" onClick={() => handleCreateTaskOpen(project.name)}>
+                                            <Plus className="w-3 h-3 mr-2" /> Create Task
+                                          </Button>
+                                        </div>
+                                      </AccordionContent>
+                                    </AccordionItem>
+                                  </Accordion>
+                                ))}
                               </div>
-
-                              <div className="flex justify-end gap-3 pt-4">
-                                <Button
-                                  variant="ghost"
-                                  onClick={() => setIsCreateProjectOpen(false)}
-                                  className="text-gray-500"
-                                >
-                                  Cancel
-                                </Button>
-                                <Button className="bg-blue-500 hover:bg-blue-600 text-white px-6">CREATE</Button>
-                              </div>
-                            </DialogContent>
-                          </Dialog>
-                        </div>
+                            </AccordionContent>
+                          </AccordionItem>
+                        </Accordion>
                       </div>
                     </DropdownMenuContent>
                   </DropdownMenu>
                 ) : (
-                  <div className="flex items-center w-full min-w-0">
-                    <div className={`w-5 h-5 rounded-full mr-2 ${row.color ? `bg-${row.color}-500` : 'bg-gray-200'}`}></div>
-                    <span className="text-gray-700 font-medium break-words w-full">
-                      {row.type === 'task' ? `${row.projectName}: ${row.name}` : row.name}
+                  <div className="flex items-center w-full overflow-hidden">
+                    <div className={`w-3 h-3 rounded-full mr-2 shrink-0 ${row.color ? `bg-${row.color}-500` : 'bg-gray-200'}`}></div>
+                    <span className="text-gray-700 font-medium truncate">
+                      {row.type === 'task' ? `${row.name}` : (row.name || "Unnamed Project")}
                     </span>
                   </div>
                 )}
               </div>
-              {weekDays.slice(1).map((day, index) => (
-                <div
-                  key={day.value}
-                  className={`col-span-1 flex items-center justify-center px-3 py-3 w-full min-w-0 max-w-xs border-r border-gray-200 last:border-r-0 text-base lg:text-lg ${day.value === "total" ? "bg-gray-50 font-semibold" : ""}`}
-                >
+
+              {weekDays.slice(1).map((day) => (
+                <div key={day.value} className={`${day.value === 'total' ? 'col-span-2' : 'col-span-1'} flex items-center justify-center px-2 py-3 border-r border-gray-200 last:border-r-0 ${day.value === "total" ? "bg-gray-50" : ""}`}>
                   {day.value !== "total" ? (
                     <input
                       type="text"
                       value={rowTimes[row.id]?.[day.value] || ""}
                       onChange={e => handleTimeInputChange(row.id, day.value, e.target.value)}
                       onKeyDown={e => handleTimeInputKeyDown(row.id, day.value, e)}
-                      className={`w-full text-center bg-transparent text-gray-600 text-base lg:text-lg truncate break-words border border-gray-200 rounded-lg py-2 ${row.type === 'project' && !row.name ? 'cursor-not-allowed' : ''}`}
-                      placeholder="hh:mm:ss"
-                      title="Entrer les heures au format souhaité"
-                      readOnly={row.type === 'project' && !row.name}
+                      onBlur={() => handleTimeInputBlur(row.id, day.value)}
+
+                      className="w-full text-center bg-transparent text-gray-600 border border-gray-200 rounded py-1 px-1 text-sm lg:text-base focus:ring-1 focus:ring-blue-500 outline-none"
+                      placeholder="00:00:00"
                     />
                   ) : (
-                    <span className="w-full text-center font-semibold">{getRowTotal(row.id)}</span>
+                    <span className="font-semibold text-sm lg:text-base">{getRowTotal(row.id)}</span>
                   )}
                 </div>
               ))}
-              <button 
-                onClick={() => handleRemoveRow(row.id)}
-                className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 flex justify-center items-center p-1 rounded hover:bg-gray-100"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>            
-          ))}
-          {/* Ligne d'exemple représentant une tâche d'un projet */}
-          <div className="grid grid-cols-10 w-full min-w-0 relative">
 
-          </div>
+              <button onClick={() => handleRemoveRow(row.id)} className="absolute right-1 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-red-500"><X className="w-4 h-4" /></button>
+            </div>
+          ))}
+        </div>
+
+        {/* Action Buttons */}
+        <div className="flex gap-3">
+          <Button variant="outline" className="flex items-center gap-2" onClick={handleAddRow}><Plus className="w-4 h-4" /> Add new row</Button>
         </div>
 
         {/* Task Creation Modal */}
         <Dialog open={isCreateTaskOpen} onOpenChange={setIsCreateTaskOpen}>
           <DialogContent className="sm:max-w-[425px]">
-            <DialogHeader>
-              <DialogTitle>Create New Task</DialogTitle>
-            </DialogHeader>
+            <DialogHeader><DialogTitle>Create New Task</DialogTitle></DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="taskName" className="text-right">
-                  Task Name
-                </Label>
-                <Input
-                  id="taskName"
-                  value={taskName}
-                  onChange={(e) => setTaskName(e.target.value)}
-                  className="col-span-3"
-                  placeholder="Enter task name"
-                />
+                <Label htmlFor="taskName" className="text-right">Name</Label>
+                <Input id="taskName" value={taskName} onChange={(e) => setTaskName(e.target.value)} className="col-span-3" />
               </div>
               <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="project" className="text-right">
-                  Project
-                </Label>
+                <Label className="text-right"></Label>
                 <div className="col-span-3">
-                  <div className="flex items-center gap-2">
-                    <div className={`w-3 h-3 rounded-full bg-${projects.find(p => p.name === selectedProjectForTask)?.color}-500`}></div>
-                    <span>{selectedProjectForTask}</span>
+                  <div className="flex bg-gray-100 p-1 rounded-md mb-2">
+                    <button
+                      className={`flex-1 text-xs py-1.5 rounded-md transition-all ${assignmentMode === 'individual' ? 'bg-white shadow-sm font-medium' : 'text-gray-500'}`}
+                      onClick={() => setAssignmentMode('individual')}
+                    >
+                      Individual
+                    </button>
+                    <button
+                      className={`flex-1 text-xs py-1.5 rounded-md transition-all ${assignmentMode === 'role' ? 'bg-white shadow-sm font-medium' : 'text-gray-500'}`}
+                      onClick={() => setAssignmentMode('role')}
+                    >
+                      Role
+                    </button>
                   </div>
                 </div>
               </div>
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="assignedTo" className="text-right">Assigned To</Label>
+                <div className="col-span-3">
+                  {assignmentMode === 'individual' ? (
+                    <Select value={assignedTo} onValueChange={setAssignedTo}>
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder={isLoadingMembers ? "Loading members..." : "Select User"} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {projectMembers.length > 0 ? (
+                          projectMembers.map((member) => (
+                            <SelectItem key={member.user.id} value={member.user.id.toString()}>
+                              <div className="flex flex-col">
+                                <span className="font-small">{member.user.full_name}</span>
+                              </div>
+                            </SelectItem>
+                          ))
+                        ) : (
+                          <SelectItem value="none" disabled>
+                            {isLoadingMembers ? "Loading..." : "No members found"}
+                          </SelectItem>
+                        )}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Select value={assignedRole} onValueChange={setAssignedRole}>
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select Role" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="admin">Admin</SelectItem>
+                        <SelectItem value="projectmanager">Project Manager</SelectItem>
+                        <SelectItem value="employee">Employee</SelectItem>
+                        <SelectItem value="finance">Finance</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
+                </div>
+              </div>
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label className="text-right">Project</Label>
+                <div className="col-span-3 font-medium">{selectedProjectForTask}</div>
+              </div>
             </div>
             <div className="flex justify-end gap-3">
-              <Button variant="outline" onClick={() => setIsCreateTaskOpen(false)}>
-                Cancel
-              </Button>
+              <Button variant="outline" onClick={() => setIsCreateTaskOpen(false)}>Cancel</Button>
               <Button onClick={handleTaskSubmit}>Create Task</Button>
             </div>
           </DialogContent>
         </Dialog>
-
-        {/* Total Row */}
-        <div className="bg-blue-50 rounded-lg border border-blue-200 mb-6 overflow-x-auto lg:overflow-x-visible xl:overflow-x-visible">
-          <div className="grid grid-cols-10 w-[900px] sm:w-[1100px] md:w-[1300px] lg:w-full min-w-[900px] sm:min-w-[1100px] md:min-w-[1300px] lg:min-w-0">
-            <div className="col-span-1 flex items-center px-3 py-3 w-full min-w-[120px] sm:min-w-[140px] md:min-w-[160px] lg:min-w-0 max-w-xs border-r border-blue-200">
-              <span className="font-semibold text-gray-800 text-sm sm:text-base md:text-lg lg:text-lg truncate break-words w-full">Total</span>
-            </div>
-            {weekDays.slice(1).map((day) => (
-              <div
-                key={day.value}
-                className={`col-span-1 flex items-center justify-center px-3 py-3 w-full min-w-[80px] sm:min-w-[100px] md:min-w-[120px] lg:min-w-0 max-w-xs border-r border-blue-200 last:border-r-0 text-sm sm:text-base md:text-lg lg:text-lg ${
-                  day.value === "total" ? "bg-blue-100 font-bold" : ""
-                }`}
-              >
-                <span className="text-gray-700 font-medium truncate break-words w-full">{day.time}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Action Buttons */}
-        <div className="flex flex-wrap gap-3">
-          <Button variant="outline" className="flex items-center gap-2 bg-transparent" onClick={handleAddRow}>
-            <Plus className="w-4 h-4" />
-            Add new row
-          </Button>
-
-          <Button variant="outline" className="flex items-center gap-2 bg-transparent">
-            <Copy className="w-4 h-4" />
-            Copy last week
-            <ChevronDown className="w-4 h-4" />
-          </Button>
-
-          <Button variant="outline" className="flex items-center gap-2 bg-transparent">
-            <Save className="w-4 h-4" />
-            Save as template
-          </Button>
-        </div>
       </main>
     </div>
   )
